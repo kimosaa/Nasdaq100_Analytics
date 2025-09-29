@@ -1,0 +1,590 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from scipy import stats
+import yfinance as yf
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# Streamlit page configuration
+st.set_page_config(
+    page_title="NASDAQ 100 Analytics Dashboard",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem;
+    }
+    .positive {
+        color: #00cc96;
+    }
+    .negative {
+        color: #ef553b;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+class NASDAQ100Analyzer:
+    def __init__(self, period="2y"):
+        self.period = period
+        self.ticker = "QQQ"
+        self.data = self.fetch_market_data()
+        if not self.data.empty:
+            self.price_series = self.data['Close']
+            self.returns = self.calculate_returns()
+    
+    def fetch_market_data(self):
+        """Fetch NASDAQ 100 data with fallback to simulation"""
+        try:
+            ticker = yf.Ticker(self.ticker)
+            data = ticker.history(period=self.period)
+            if not data.empty:
+                return data
+            else:
+                return self.create_simulated_data()
+        except:
+            return self.create_simulated_data()
+    
+    def create_simulated_data(self):
+        """Create realistic simulated NASDAQ 100 data"""
+        days = 504 if self.period == "2y" else 252
+        dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
+        
+        start_price = 15000
+        daily_volatility = 0.015
+        daily_drift = 0.0004
+        
+        prices = [start_price]
+        for i in range(1, days):
+            shock = np.random.normal(daily_drift, daily_volatility)
+            price = prices[-1] * np.exp(shock)
+            prices.append(price)
+        
+        data = pd.DataFrame({
+            'Open': prices,
+            'High': [p * (1 + np.random.uniform(0, 0.02)) for p in prices],
+            'Low': [p * (1 - np.random.uniform(0, 0.015)) for p in prices],
+            'Close': prices,
+            'Volume': np.random.lognormal(15, 1, days)
+        }, index=dates)
+        
+        data['High'] = np.maximum(data['High'], data['Close'])
+        data['Low'] = np.minimum(data['Low'], data['Close'])
+        
+        return data
+
+    def calculate_returns(self):
+        """Calculate return metrics"""
+        returns_data = pd.DataFrame(index=self.data.index)
+        returns_data['Daily_Return'] = self.price_series.pct_change()
+        returns_data['Cumulative_Return'] = (1 + returns_data['Daily_Return']).cumprod() - 1
+        returns_data['Log_Return'] = np.log(self.price_series / self.price_series.shift(1))
+        
+        returns_data['Rolling_Mean_21d'] = returns_data['Daily_Return'].rolling(window=21).mean()
+        returns_data['Rolling_Std_21d'] = returns_data['Daily_Return'].rolling(window=21).std()
+        
+        return returns_data.dropna()
+
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">📈 NASDAQ 100 Analytics Dashboard</h1>', unsafe_allow_html=True)
+    
+    # Sidebar
+    st.sidebar.title("Configuration")
+    period = st.sidebar.selectbox(
+        "Select Time Period",
+        ["6mo", "1y", "2y", "5y"],
+        index=2
+    )
+    
+    analysis_type = st.sidebar.selectbox(
+        "Analysis Type",
+        ["Overview", "Technical Analysis", "Risk Analysis", "Comparative Analysis"]
+    )
+    
+    # Initialize analyzer
+    with st.spinner("Loading NASDAQ 100 data..."):
+        analyzer = NASDAQ100Analyzer(period=period)
+    
+    if analyzer.data.empty:
+        st.error("Failed to load data. Please try again.")
+        return
+    
+    # Main dashboard
+    if analysis_type == "Overview":
+        show_overview(analyzer)
+    elif analysis_type == "Technical Analysis":
+        show_technical_analysis(analyzer)
+    elif analysis_type == "Risk Analysis":
+        show_risk_analysis(analyzer)
+    elif analysis_type == "Comparative Analysis":
+        show_comparative_analysis(analyzer)
+
+def show_overview(analyzer):
+    """Display market overview"""
+    col1, col2, col3, col4 = st.columns(4)
+    
+    start_price = analyzer.price_series.iloc[0]
+    end_price = analyzer.price_series.iloc[-1]
+    total_return = (end_price / start_price - 1) * 100
+    daily_vol = analyzer.returns['Daily_Return'].std() * 100
+    
+    with col1:
+        st.metric(
+            "Current Price",
+            f"${end_price:,.2f}",
+            f"{total_return:.2f}%"
+        )
+    
+    with col2:
+        st.metric(
+            "Total Return",
+            f"{total_return:.2f}%",
+            f"From ${start_price:,.0f}"
+        )
+    
+    with col3:
+        st.metric(
+            "Daily Volatility",
+            f"{daily_vol:.2f}%",
+            "Standard Deviation"
+        )
+    
+    with col4:
+        profitable_days = len(analyzer.returns[analyzer.returns['Daily_Return'] > 0])
+        profit_ratio = profitable_days / len(analyzer.returns) * 100
+        st.metric(
+            "Positive Days",
+            f"{profit_ratio:.1f}%",
+            f"{profitable_days}/{len(analyzer.returns)} days"
+        )
+    
+    # Price chart
+    st.subheader("Price Movement")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=analyzer.data.index,
+        y=analyzer.price_series,
+        mode='lines',
+        name='NASDAQ 100',
+        line=dict(color='#1f77b4', width=2)
+    ))
+    fig.update_layout(
+        title="NASDAQ 100 Price Chart",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        template="plotly_white",
+        height=400
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Performance metrics
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Performance Metrics")
+        
+        # Calculate additional metrics
+        max_drawdown = calculate_max_drawdown(analyzer.price_series)
+        sharpe_ratio = calculate_sharpe_ratio(analyzer.returns['Daily_Return'])
+        
+        metrics_data = {
+            "Metric": ["Total Return", "Annualized Return", "Sharpe Ratio", 
+                      "Max Drawdown", "Volatility (Annual)", "Best Day", "Worst Day"],
+            "Value": [
+                f"{total_return:.2f}%",
+                f"{(analyzer.returns['Daily_Return'].mean() * 252 * 100):.2f}%",
+                f"{sharpe_ratio:.2f}",
+                f"{max_drawdown:.2f}%",
+                f"{(daily_vol * np.sqrt(252)):.2f}%",
+                f"{(analyzer.returns['Daily_Return'].max() * 100):.2f}%",
+                f"{(analyzer.returns['Daily_Return'].min() * 100):.2f}%"
+            ]
+        }
+        
+        metrics_df = pd.DataFrame(metrics_data)
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+    
+    with col2:
+        st.subheader("Return Distribution")
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        analyzer.returns['Daily_Return'].hist(bins=50, alpha=0.7, ax=ax)
+        ax.axvline(analyzer.returns['Daily_Return'].mean(), color='red', linestyle='--', label='Mean')
+        ax.set_xlabel('Daily Return')
+        ax.set_ylabel('Frequency')
+        ax.set_title('Distribution of Daily Returns')
+        ax.legend()
+        st.pyplot(fig)
+
+def show_technical_analysis(analyzer):
+    """Display technical analysis"""
+    st.header("Technical Analysis")
+    
+    # Calculate technical indicators
+    analyzer.data['MA_20'] = analyzer.price_series.rolling(window=20).mean()
+    analyzer.data['MA_50'] = analyzer.price_series.rolling(window=50).mean()
+    analyzer.data['MA_200'] = analyzer.price_series.rolling(window=200).mean()
+    
+    # RSI
+    delta = analyzer.price_series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    analyzer.data['RSI'] = 100 - (100 / (1 + rs))
+    
+    # Bollinger Bands
+    analyzer.data['BB_Middle'] = analyzer.price_series.rolling(window=20).mean()
+    bb_std = analyzer.price_series.rolling(window=20).std()
+    analyzer.data['BB_Upper'] = analyzer.data['BB_Middle'] + (bb_std * 2)
+    analyzer.data['BB_Lower'] = analyzer.data['BB_Middle'] - (bb_std * 2)
+    
+    # Price with Moving Averages
+    st.subheader("Price with Moving Averages")
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=analyzer.data.index,
+        y=analyzer.price_series,
+        mode='lines',
+        name='Price',
+        line=dict(color='#1f77b4', width=2)
+    ))
+    
+    for ma, color in zip(['MA_20', 'MA_50', 'MA_200'], ['#ff7f0e', '#2ca02c', '#d62728']):
+        if ma in analyzer.data.columns:
+            fig.add_trace(go.Scatter(
+                x=analyzer.data.index,
+                y=analyzer.data[ma],
+                mode='lines',
+                name=ma,
+                line=dict(color=color, width=1, dash='dash')
+            ))
+    
+    fig.update_layout(
+        title="Price with Moving Averages",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        template="plotly_white",
+        height=400
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Technical Indicators
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Relative Strength Index (RSI)")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=analyzer.data.index,
+            y=analyzer.data['RSI'],
+            mode='lines',
+            name='RSI',
+            line=dict(color='purple', width=2)
+        ))
+        fig.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Overbought")
+        fig.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Oversold")
+        fig.update_layout(
+            yaxis_range=[0, 100],
+            template="plotly_white",
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("Bollinger Bands")
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=analyzer.data.index,
+            y=analyzer.data['BB_Upper'],
+            mode='lines',
+            name='Upper Band',
+            line=dict(color='gray', width=1)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=analyzer.data.index,
+            y=analyzer.data['BB_Middle'],
+            mode='lines',
+            name='Middle Band',
+            line=dict(color='black', width=1)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=analyzer.data.index,
+            y=analyzer.data['BB_Lower'],
+            mode='lines',
+            name='Lower Band',
+            line=dict(color='gray', width=1)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=analyzer.data.index,
+            y=analyzer.price_series,
+            mode='lines',
+            name='Price',
+            line=dict(color='#1f77b4', width=2)
+        ))
+        
+        fig.update_layout(
+            template="plotly_white",
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Current Technical Signals
+    st.subheader("Current Technical Signals")
+    current_rsi = analyzer.data['RSI'].iloc[-1] if not pd.isna(analyzer.data['RSI'].iloc[-1]) else 50
+    current_price = analyzer.price_series.iloc[-1]
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        rsi_status = "Overbought" if current_rsi > 70 else "Oversold" if current_rsi < 30 else "Neutral"
+        rsi_color = "red" if current_rsi > 70 else "green" if current_rsi < 30 else "orange"
+        st.metric("RSI Signal", rsi_status, f"{current_rsi:.1f}")
+    
+    with col2:
+        if 'MA_20' in analyzer.data.columns:
+            ma_20_signal = "Above" if current_price > analyzer.data['MA_20'].iloc[-1] else "Below"
+            st.metric("Price vs MA20", ma_20_signal)
+    
+    with col3:
+        if 'BB_Upper' in analyzer.data.columns and 'BB_Lower' in analyzer.data.columns:
+            if current_price > analyzer.data['BB_Upper'].iloc[-1]:
+                bb_signal = "Above Upper Band"
+            elif current_price < analyzer.data['BB_Lower'].iloc[-1]:
+                bb_signal = "Below Lower Band"
+            else:
+                bb_signal = "Within Bands"
+            st.metric("Bollinger Bands", bb_signal)
+
+def show_risk_analysis(analyzer):
+    """Display risk analysis"""
+    st.header("Risk Analysis")
+    
+    returns = analyzer.returns['Daily_Return']
+    
+    # Value at Risk
+    var_95 = returns.quantile(0.05) * 100
+    var_99 = returns.quantile(0.01) * 100
+    
+    # Expected Shortfall
+    cvar_95 = returns[returns <= returns.quantile(0.05)].mean() * 100
+    cvar_99 = returns[returns <= returns.quantile(0.01)].mean() * 100
+    
+    # Maximum Drawdown
+    max_drawdown = calculate_max_drawdown(analyzer.price_series)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("95% VaR (Daily)", f"{var_95:.2f}%")
+    
+    with col2:
+        st.metric("99% VaR (Daily)", f"{var_99:.2f}%")
+    
+    with col3:
+        st.metric("95% CVaR (Daily)", f"{cvar_95:.2f}%")
+    
+    with col4:
+        st.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+    
+    # Risk Visualization
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Rolling Volatility")
+        rolling_vol = returns.rolling(window=21).std() * np.sqrt(252) * 100
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=rolling_vol.index,
+            y=rolling_vol,
+            mode='lines',
+            name='21-Day Volatility',
+            line=dict(color='orange', width=2)
+        ))
+        fig.update_layout(
+            title="Annualized Rolling Volatility (21-Day)",
+            xaxis_title="Date",
+            yaxis_title="Volatility (%)",
+            template="plotly_white",
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("Drawdown Analysis")
+        cumulative_returns = (1 + returns).cumprod()
+        rolling_max = cumulative_returns.expanding().max()
+        drawdown = (cumulative_returns - rolling_max) / rolling_max * 100
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=drawdown.index,
+            y=drawdown,
+            mode='lines',
+            name='Drawdown',
+            line=dict(color='red', width=2),
+            fill='tozeroy'
+        ))
+        fig.update_layout(
+            title="Portfolio Drawdown",
+            xaxis_title="Date",
+            yaxis_title="Drawdown (%)",
+            template="plotly_white",
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Monte Carlo Simulation
+    st.subheader("Monte Carlo Price Simulation")
+    
+    days = 252  # 1 year
+    simulations = 100
+    last_price = analyzer.price_series.iloc[-1]
+    
+    simulations_df = pd.DataFrame()
+    
+    for i in range(simulations):
+        daily_vol = returns.std()
+        price_series = [last_price]
+        
+        for _ in range(days):
+            drift = returns.mean() - 0.5 * daily_vol**2
+            shock = daily_vol * np.random.normal()
+            price = price_series[-1] * np.exp(drift + shock)
+            price_series.append(price)
+        
+        simulations_df[f'Sim_{i}'] = price_series
+    
+    fig = go.Figure()
+    for col in simulations_df.columns:
+        fig.add_trace(go.Scatter(
+            x=list(range(len(simulations_df))),
+            y=simulations_df[col],
+            mode='lines',
+            line=dict(width=1, color='blue'),
+            opacity=0.1,
+            showlegend=False
+        ))
+    
+    # Add mean line
+    mean_simulation = simulations_df.mean(axis=1)
+    fig.add_trace(go.Scatter(
+        x=list(range(len(mean_simulation))),
+        y=mean_simulation,
+        mode='lines',
+        line=dict(width=3, color='red'),
+        name='Expected Path'
+    ))
+    
+    fig.update_layout(
+        title="Monte Carlo Price Simulation (1 Year)",
+        xaxis_title="Trading Days",
+        yaxis_title="Price",
+        template="plotly_white",
+        height=400
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+def show_comparative_analysis(analyzer):
+    """Display comparative analysis with other indices"""
+    st.header("Comparative Analysis")
+    
+    # Fetch comparison indices
+    comparison_tickers = {
+        'SPY': 'S&P 500',
+        'DIA': 'Dow Jones', 
+        'IWM': 'Russell 2000'
+    }
+    
+    comparison_data = pd.DataFrame()
+    comparison_data['NASDAQ 100'] = analyzer.returns['Daily_Return']
+    
+    for ticker, name in comparison_tickers.items():
+        try:
+            comp_data = yf.Ticker(ticker).history(period=analyzer.period)
+            comp_returns = comp_data['Close'].pct_change().dropna()
+            comp_returns = comp_returns.reindex(comparison_data.index)
+            comparison_data[name] = comp_returns
+        except:
+            st.warning(f"Could not load data for {ticker}")
+    
+    # Correlation Matrix
+    st.subheader("Correlation Matrix")
+    
+    if len(comparison_data.columns) > 1:
+        correlation_matrix = comparison_data.corr()
+        
+        fig = px.imshow(
+            correlation_matrix,
+            text_auto=True,
+            aspect="auto",
+            color_continuous_scale="RdBu_r",
+            title="Correlation Matrix of Daily Returns"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Cumulative Returns Comparison
+    st.subheader("Cumulative Returns Comparison")
+    
+    if len(comparison_data.columns) > 1:
+        cumulative_returns = (1 + comparison_data).cumprod()
+        
+        fig = go.Figure()
+        for column in cumulative_returns.columns:
+            fig.add_trace(go.Scatter(
+                x=cumulative_returns.index,
+                y=cumulative_returns[column],
+                mode='lines',
+                name=column,
+                line=dict(width=2)
+            ))
+        
+        fig.update_layout(
+            title="Cumulative Returns Comparison",
+            xaxis_title="Date",
+            yaxis_title="Cumulative Return",
+            template="plotly_white",
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+def calculate_max_drawdown(price_series):
+    """Calculate maximum drawdown"""
+    cumulative = (1 + price_series.pct_change()).cumprod()
+    rolling_max = cumulative.expanding().max()
+    drawdown = (cumulative - rolling_max) / rolling_max
+    return drawdown.min() * 100
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
+    """Calculate Sharpe ratio"""
+    excess_returns = returns.mean() * 252 - risk_free_rate
+    volatility = returns.std() * np.sqrt(252)
+    return excess_returns / volatility if volatility != 0 else 0
+
+if __name__ == "__main__":
+    main()
